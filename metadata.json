@@ -1,0 +1,6 @@
+{
+  "name": "VietVoice Studio - Ghép Giọng Nói Tiếng Việt Vào Video",
+  "description": "Ứng dụng chuyển văn bản thành giọng đọc tiếng Việt AI và ghép trực tiếp vào video có sẵn cho điện thoại Samsung và di động.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
