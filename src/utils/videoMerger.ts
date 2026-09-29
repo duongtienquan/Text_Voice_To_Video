@@ -1,8 +1,20 @@
 // Video and Audio Merging Engine using Canvas, Web Audio API, and MediaRecorder
 import { MergeSettings } from '../types';
+import { blobToBase64, base64ToBlob } from './audioUtils';
 
 export interface MergeProgressCallback {
   (progress: number, message: string): void;
+}
+
+export interface MergeResult {
+  blob: Blob;
+  url: string;
+  duration: number;
+  format: 'MP4' | 'WebM';
+  mp4Blob?: Blob;
+  mp4Url?: string;
+  webmBlob?: Blob;
+  webmUrl?: string;
 }
 
 export class VideoAudioMerger {
@@ -20,71 +32,120 @@ export class VideoAudioMerger {
     audioBlob: Blob,
     settings: MergeSettings,
     onProgress?: MergeProgressCallback
-  ): Promise<{ blob: Blob; url: string; duration: number }> {
+  ): Promise<MergeResult> {
     this.isCancelled = false;
-    onProgress?.(5, 'Đang chuẩn bị video và tệp âm thanh tiếng Việt...');
 
-    // 1. Load hidden video element
+    // 1. PRIMARY FAST & ROCK-SOLID PATH: Server-Side FFmpeg Direct Merge (0% dropped frames, no browser throttle)
+    try {
+      onProgress?.(10, 'Đang chuẩn bị tệp video và âm thanh thuyết minh...');
+      const videoRes = await fetch(videoSrc);
+      const videoBlob = await videoRes.blob();
+
+      onProgress?.(30, 'Đang nạp dữ liệu vào bộ xử lý video tốc độ cao...');
+      const [videoBase64, audioBase64] = await Promise.all([
+        blobToBase64(videoBlob),
+        blobToBase64(audioBlob),
+      ]);
+
+      if (this.isCancelled) {
+        throw new Error('Đã hủy quá trình xuất video.');
+      }
+
+      onProgress?.(60, 'Đang ghép âm thanh và đóng gói định dạng chuẩn MP4...');
+      const response = await fetch('/api/video/merge-direct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          videoBase64,
+          audioBase64,
+          audioOffset: settings.audioOffset,
+          voiceVolume: settings.voiceVolume,
+          videoVolume: settings.videoVolume,
+          muteOriginalVideo: settings.muteOriginalVideo,
+          subtitles: settings.subtitles,
+          exportFormat: settings.exportFormat,
+        }),
+      });
+
+      const data = await response.json();
+      if (data.success && data.videoBase64) {
+        onProgress?.(95, 'Đang hoàn tất tệp video thành phẩm...');
+        const mergedBlob = base64ToBlob(data.videoBase64, data.mimeType || 'video/mp4');
+        const mergedUrl = URL.createObjectURL(mergedBlob);
+        onProgress?.(100, `Ghép video và xuất định dạng ${data.format || 'MP4'} hoàn tất!`);
+
+        return {
+          blob: mergedBlob,
+          url: mergedUrl,
+          duration: 0,
+          format: (data.format as 'MP4' | 'WebM') || 'MP4',
+          mp4Blob: mergedBlob,
+          mp4Url: mergedUrl,
+          webmBlob: undefined,
+          webmUrl: undefined,
+        };
+      } else {
+        console.warn('Direct merge server response not success:', data.error);
+      }
+    } catch (serverErr) {
+      console.warn('Server direct merge failed, falling back to browser canvas recorder:', serverErr);
+    }
+
+    if (this.isCancelled) {
+      throw new Error('Đã hủy quá trình xuất video.');
+    }
+
+    // 2. FALLBACK PATH: Client-side Canvas Recording
+    onProgress?.(20, 'Đang chuẩn bị bộ thu khung hình dự phòng...');
+
+    // Attach video element to DOM with visible layout presence so Chrome does NOT throttle/pause rendering
+    const fallbackContainer = document.createElement('div');
+    fallbackContainer.style.cssText =
+      'position:fixed;right:0;bottom:0;width:320px;height:180px;opacity:0.001;pointer-events:none;overflow:hidden;z-index:-999;';
     const video = document.createElement('video');
     video.crossOrigin = 'anonymous';
     video.src = videoSrc;
-    video.muted = false; // we capture audio via element or web audio
+    video.muted = true;
     video.playsInline = true;
+    fallbackContainer.appendChild(video);
+    document.body.appendChild(fallbackContainer);
 
     await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve();
-      video.onerror = () => reject(new Error('Không thể tải video nguồn.'));
+      if (video.readyState >= 1) {
+        resolve();
+      } else {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => reject(new Error('Không thể tải video nguồn.'));
+      }
     });
 
-    const duration = video.duration || 5;
+    const duration = video.duration && isFinite(video.duration) && video.duration > 0 ? video.duration : 6;
     const width = video.videoWidth || 720;
     const height = video.videoHeight || 1280;
 
-    onProgress?.(15, 'Đang phân tích và xử lý âm thanh...');
-
-    // 2. Decode audio buffer for the voiceover
     const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({
       sampleRate: 44100,
     });
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
 
     const audioArrayBuffer = await audioBlob.arrayBuffer();
     const voiceAudioBuffer = await audioCtx.decodeAudioData(audioArrayBuffer);
 
-    // 3. Setup canvas & destination
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext('2d')!;
 
     const destination = audioCtx.createMediaStreamDestination();
-
-    // Setup voiceover source node
     const voiceSource = audioCtx.createBufferSource();
     voiceSource.buffer = voiceAudioBuffer;
-
     const voiceGain = audioCtx.createGain();
     voiceGain.gain.setValueAtTime(settings.voiceVolume, audioCtx.currentTime);
     voiceSource.connect(voiceGain);
     voiceGain.connect(destination);
 
-    // Setup video audio if original video audio should be mixed
-    let videoSourceNode: MediaElementAudioSourceNode | null = null;
-    let videoGain: GainNode | null = null;
-    if (!settings.muteOriginalVideo && settings.videoVolume > 0) {
-      try {
-        videoSourceNode = audioCtx.createMediaElementSource(video);
-        videoGain = audioCtx.createGain();
-        videoGain.gain.setValueAtTime(settings.videoVolume, audioCtx.currentTime);
-        videoSourceNode.connect(videoGain);
-        videoGain.connect(destination);
-      } catch {
-        // Fallback if media element source has CORS or single-element restriction
-      }
-    }
-
-    onProgress?.(25, 'Đang khởi tạo bộ mã hóa video...');
-
-    // 4. Setup MediaStream & MediaRecorder
     const canvasStream = canvas.captureStream(30);
     const audioTracks = destination.stream.getAudioTracks();
     const combinedStream = new MediaStream([
@@ -93,18 +154,16 @@ export class VideoAudioMerger {
     ]);
 
     let mimeType = 'video/webm;codecs=vp8,opus';
-    if (!MediaRecorder.isTypeSupported(mimeType)) {
-      if (MediaRecorder.isTypeSupported('video/mp4')) {
-        mimeType = 'video/mp4';
-      } else {
-        mimeType = 'video/webm';
-      }
+    if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
+      mimeType = 'video/webm;codecs=vp9,opus';
+    } else if (!MediaRecorder.isTypeSupported(mimeType)) {
+      mimeType = 'video/webm';
     }
 
     const recordedChunks: Blob[] = [];
     const mediaRecorder = new MediaRecorder(combinedStream, {
       mimeType,
-      videoBitsPerSecond: 3500000,
+      videoBitsPerSecond: 3000000,
     });
 
     mediaRecorder.ondataavailable = (event) => {
@@ -114,88 +173,141 @@ export class VideoAudioMerger {
     };
 
     return new Promise((resolve, reject) => {
+      let isFinished = false;
+
+      const cleanup = () => {
+        try { voiceSource.stop(); } catch {}
+        try { video.pause(); } catch {}
+        if (fallbackContainer.parentNode) {
+          fallbackContainer.parentNode.removeChild(fallbackContainer);
+        }
+        try { audioCtx.close(); } catch {}
+      };
+
       mediaRecorder.onerror = (e) => {
         cleanup();
         reject(new Error(`Lỗi quay video: ${e}`));
       };
 
-      mediaRecorder.onstop = () => {
+      mediaRecorder.onstop = async () => {
         cleanup();
         if (this.isCancelled) {
           reject(new Error('Đã hủy quá trình xuất video.'));
           return;
         }
 
-        const finalBlob = new Blob(recordedChunks, { type: mimeType });
-        const finalUrl = URL.createObjectURL(finalBlob);
-        onProgress?.(100, 'Ghép video và giọng nói hoàn tất!');
-        resolve({ blob: finalBlob, url: finalUrl, duration });
-      };
-
-      const cleanup = () => {
-        try {
-          voiceSource.stop();
-        } catch {}
-        try {
-          video.pause();
-        } catch {}
-        audioCtx.close();
-      };
-
-      // 5. Start recording and playback
-      mediaRecorder.start(100);
-      video.currentTime = 0;
-
-      let hasVoiceStarted = false;
-      const startTime = performance.now();
-
-      const renderLoop = () => {
-        if (this.isCancelled) {
-          mediaRecorder.stop();
+        const totalBytes = recordedChunks.reduce((acc, c) => acc + c.size, 0);
+        if (totalBytes === 0) {
+          reject(new Error('Lỗi quay video: Không nhận được dữ liệu khung hình. Vui lòng thử lại.'));
           return;
         }
 
-        const elapsed = (performance.now() - startTime) / 1000;
+        const webmBlob = new Blob(recordedChunks, { type: mimeType });
+        const webmUrl = URL.createObjectURL(webmBlob);
 
-        // Check if voice should start playing based on offset
-        if (!hasVoiceStarted && elapsed >= settings.audioOffset) {
+        let finalBlob: Blob = webmBlob;
+        let finalUrl: string = webmUrl;
+        let finalFormat: 'MP4' | 'WebM' = 'WebM';
+        let mp4Blob: Blob | undefined;
+        let mp4Url: string | undefined;
+
+        if (settings.exportFormat === 'mp4') {
           try {
-            voiceSource.start(0);
-          } catch {}
-          hasVoiceStarted = true;
+            onProgress?.(94, 'Đang đóng gói định dạng chuẩn MP4 (H.264 + AAC)...');
+            const base64 = await blobToBase64(webmBlob);
+            const response = await fetch('/api/video/convert-to-mp4', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ videoBase64: base64 }),
+            });
+            const data = await response.json();
+            if (data.success && data.mp4Base64) {
+              mp4Blob = base64ToBlob(data.mp4Base64, 'video/mp4');
+              mp4Url = URL.createObjectURL(mp4Blob);
+              finalBlob = mp4Blob;
+              finalUrl = mp4Url;
+              finalFormat = 'MP4';
+            }
+          } catch (convErr) {
+            console.warn('Lỗi chuyển đổi sang MP4, sử dụng WebM:', convErr);
+          }
         }
 
-        // Draw current video frame to canvas
-        if (video.readyState >= 2) {
-          ctx.drawImage(video, 0, 0, width, height);
+        onProgress?.(100, `Ghép video và xuất định dạng ${finalFormat} hoàn tất!`);
+        resolve({
+          blob: finalBlob,
+          url: finalUrl,
+          duration,
+          format: finalFormat,
+          mp4Blob,
+          mp4Url,
+          webmBlob,
+          webmUrl,
+        });
+      };
 
-          // Draw subtitle if enabled
+      video.currentTime = 0;
+
+      const drawFrame = () => {
+        if (video.videoWidth > 0) {
+          ctx.drawImage(video, 0, 0, width, height);
           if (settings.subtitles.enabled && settings.subtitles.text.trim()) {
             drawSubtitles(ctx, width, height, settings.subtitles);
           }
         }
-
-        // Calculate progress
-        const currentProgress = Math.min(98, Math.round((video.currentTime / duration) * 100));
-        onProgress?.(currentProgress, `Đang ghép khung hình (${Math.round(video.currentTime)}s / ${Math.round(duration)}s)...`);
-
-        if (video.ended || video.currentTime >= duration || elapsed >= duration + 0.3) {
-          onProgress?.(99, 'Đang đóng gói tệp video...');
-          setTimeout(() => {
-            if (mediaRecorder.state !== 'inactive') {
-              mediaRecorder.stop();
-            }
-          }, 300);
-        } else {
-          requestAnimationFrame(renderLoop);
-        }
       };
 
       video.play().then(() => {
+        mediaRecorder.start(100);
+        let hasVoiceStarted = false;
+        const startTime = performance.now();
+
+        const renderLoop = () => {
+          if (this.isCancelled || isFinished) return;
+
+          const elapsed = (performance.now() - startTime) / 1000;
+
+          if (!hasVoiceStarted && elapsed >= Math.max(0, settings.audioOffset)) {
+            try {
+              voiceSource.start(0);
+            } catch {}
+            hasVoiceStarted = true;
+          }
+
+          drawFrame();
+
+          const progressPercent = Math.min(
+            92,
+            Math.max(25, Math.round((video.currentTime / duration) * 100))
+          );
+          onProgress?.(
+            progressPercent,
+            `Đang ghép khung hình (${Math.round(video.currentTime)}s / ${Math.round(duration)}s)...`
+          );
+
+          const isVideoEnded = video.ended || video.currentTime >= duration - 0.1;
+          const isTimeElapsed = elapsed >= duration + 0.2;
+
+          if (elapsed > 0.8 && (isVideoEnded || isTimeElapsed)) {
+            isFinished = true;
+            onProgress?.(95, 'Đang hoàn tất đóng gói tệp video...');
+            setTimeout(() => {
+              if (mediaRecorder.state !== 'inactive') {
+                try {
+                  mediaRecorder.requestData();
+                } catch {}
+                mediaRecorder.stop();
+              }
+            }, 300);
+          } else {
+            requestAnimationFrame(renderLoop);
+          }
+        };
+
         requestAnimationFrame(renderLoop);
-      }).catch((err) => {
+      }).catch((playErr) => {
         cleanup();
-        reject(err);
+        reject(new Error(`Không thể phát video để quay: ${playErr?.message || playErr}`));
       });
     });
   }

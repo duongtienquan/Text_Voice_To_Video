@@ -32,6 +32,7 @@ export default function App() {
     videoVolume: 0.5,
     voiceVolume: 1.2,
     muteOriginalVideo: false,
+    exportFormat: 'mp4',
     subtitles: {
       enabled: true,
       text: '',
@@ -67,6 +68,7 @@ export default function App() {
       videoVolume: 0.5,
       voiceVolume: 1.2,
       muteOriginalVideo: false,
+      exportFormat: 'mp4',
       subtitles: {
         enabled: true,
         text: '',
@@ -99,6 +101,16 @@ export default function App() {
             {activeStep === 1 && (
               <StepTextToSpeech
                 currentAudio={currentAudio}
+                subtitlesEnabled={mergeSettings.subtitles.enabled}
+                onToggleSubtitles={(enabled) =>
+                  setMergeSettings((prev) => ({
+                    ...prev,
+                    subtitles: {
+                      ...prev.subtitles,
+                      enabled,
+                    },
+                  }))
+                }
                 onAudioGenerated={handleAudioGenerated}
                 onNext={() => setActiveStep(2)}
               />
@@ -133,6 +145,7 @@ export default function App() {
                 audioTrack={currentAudio}
                 videoSource={currentVideo}
                 settings={mergeSettings}
+                onUpdateSettings={setMergeSettings}
                 onBackToEdit={() => setActiveStep(3)}
                 onStartNew={handleStartNew}
               />

@@ -14,6 +14,22 @@ export function base64ToBlob(base64: string, mimeType = 'audio/wav'): Blob {
 }
 
 /**
+ * Convert Blob to base64 string
+ */
+export async function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result as string;
+      const base64 = dataUrl.split(',')[1];
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
  * Convert PCM buffer to standard 44-byte WAV header Blob
  */
 export function pcmToWavBlob(

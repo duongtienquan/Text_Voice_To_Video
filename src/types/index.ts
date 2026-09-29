@@ -48,6 +48,7 @@ export interface MergeSettings {
   voiceVolume: number; // 0.0 to 2.0
   muteOriginalVideo: boolean;
   subtitles: SubtitleConfig;
+  exportFormat: 'mp4' | 'webm';
 }
 
 export interface RenderProgress {
@@ -57,5 +58,9 @@ export interface RenderProgress {
   exportedBlob?: Blob;
   exportedUrl?: string;
   exportedDuration?: number;
-  exportFormat?: string;
+  exportFormat?: 'MP4' | 'WebM';
+  mp4Blob?: Blob;
+  mp4Url?: string;
+  webmBlob?: Blob;
+  webmUrl?: string;
 }

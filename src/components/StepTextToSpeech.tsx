@@ -12,6 +12,7 @@ import {
   ArrowRight,
   AlertCircle,
   Sliders,
+  Type,
 } from 'lucide-react';
 import { AudioTrackData, VoiceOption } from '../types';
 import {
@@ -23,6 +24,8 @@ import {
 
 interface StepTextToSpeechProps {
   currentAudio: AudioTrackData | null;
+  subtitlesEnabled?: boolean;
+  onToggleSubtitles?: (enabled: boolean) => void;
   onAudioGenerated: (audioData: AudioTrackData) => void;
   onNext: () => void;
 }
@@ -93,6 +96,8 @@ const GEMINI_VOICES: VoiceOption[] = [
 
 export const StepTextToSpeech: React.FC<StepTextToSpeechProps> = ({
   currentAudio,
+  subtitlesEnabled = true,
+  onToggleSubtitles,
   onAudioGenerated,
   onNext,
 }) => {
@@ -407,6 +412,38 @@ export const StepTextToSpeech: React.FC<StepTextToSpeechProps> = ({
           >
             Rút gọn
           </button>
+        </div>
+
+        {/* Subtitles Preference Toggle */}
+        <div className="flex items-center justify-between p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 text-xs">
+          <div className="flex items-center gap-2">
+            <Type className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="text-slate-300 font-medium">Tùy chọn phụ đề khi ghép video:</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => onToggleSubtitles?.(true)}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                subtitlesEnabled !== false
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 bg-slate-950'
+              }`}
+            >
+              Hiện phụ đề
+            </button>
+            <button
+              type="button"
+              onClick={() => onToggleSubtitles?.(false)}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all ${
+                subtitlesEnabled === false
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 bg-slate-950'
+              }`}
+            >
+              Tắt phụ đề
+            </button>
+          </div>
         </div>
       </div>
 
